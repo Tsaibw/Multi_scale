@@ -4,9 +4,9 @@ from torch import nn
 from torch.nn import LSTM
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from transformers import BertPreTrainedModel, BertConfig, BertModel
-from scale import get_scaled_down_scores, separate_and_rescale_attributes_for_scoring
-from evaluate import evaluation
 import torch.nn.functional as F
+from data.scale import get_scaled_down_scores, separate_and_rescale_attributes_for_scoring
+from utils.evaluate import evaluation
 
 
 def init_weights(m):
@@ -137,7 +137,7 @@ class multiBert(nn.Module):
         return batch_predictions_word_chunk_sentence_doc
 
 
-    def compute_loss(self, predictions, labels, ids):
+    def compute_loss(self, predictions, labels, ids, device="cuda"):
         predictions_numpy = predictions.detach().cpu().numpy().reshape(-1)
         inverse_predictions = separate_and_rescale_attributes_for_scoring(predictions_numpy, ids.tolist())
         inverse_labels_batch = separate_and_rescale_attributes_for_scoring(labels.tolist(), ids.tolist())
@@ -145,7 +145,7 @@ class multiBert(nn.Module):
         if predictions.shape[-1] == 1:
             predictions = predictions.squeeze(-1)
 
-        loss = self.mse_loss(predictions.float(), labels.float())
+        loss = self.mse_loss(predictions.float(), labels.float().to(device))
         
         return loss, inverse_predictions, inverse_labels_batch
 
@@ -157,17 +157,17 @@ class multiBert(nn.Module):
         eval_inverse_pred = []
 
         with torch.no_grad():
-            for document_single, chunked_documents, label, id_ ,lengths in eval_loader:
+            for document_single, chunked_documents, label, ids ,lengths in eval_loader:
                 document_single = document_single.to(device)
 
                 eval_predictions = self.forward(document_single, chunked_documents, device, lengths)
 
-                loss, inverse_predictions, inverse_labels = self.compute_loss(eval_predictions, label, id_)
+                loss, inverse_predictions, inverse_labels = self.compute_loss(eval_predictions, label, ids, device)
                 eval_total_loss += loss.item()
             
                 eval_pred = eval_predictions.detach().cpu().numpy().reshape(-1)
-                eval_inverse_pred.append(separate_and_rescale_attributes_for_scoring(eval_pred, id))
-                eval_inverse_label.append(separate_and_rescale_attributes_for_scoring(label, id))
+                eval_inverse_pred.append(separate_and_rescale_attributes_for_scoring(eval_pred, ids.tolist()))
+                eval_inverse_label.append(separate_and_rescale_attributes_for_scoring(label.numpy(), ids.tolist()))
                 # eval_inverse_pred.append(inverse_predictions)
                 # eval_inverse_label.append(inverse_labels)
             eval_inverse_pred_flattened = [item for sublist in eval_inverse_pred for item in sublist]
@@ -176,7 +176,8 @@ class multiBert(nn.Module):
             test_eva_res = evaluation(eval_inverse_pred_flattened, eval_inverse_label_flattened)
             pearson_score = float(test_eva_res[7])
             qwk_score = float(test_eva_res[8])
-
+            print("Pearson : ", pearson_score)
+            print("QWK : ", qwk_score)
             return eval_total_loss / len(eval_loader), qwk_score, pearson_score
 
     
