@@ -7,7 +7,7 @@ class CustomDataset(Dataset):
         with open(file_path, 'rb') as f:
           self.data = pickle.load(f)
     def __len__(self):
-        return int(len(self.data[0])*0.1)
+        return int(len(self.data[0]))
 
     def __getitem__(self, idx):
         document_single = self.data[0][idx]
