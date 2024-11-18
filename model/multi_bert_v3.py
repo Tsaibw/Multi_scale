@@ -30,7 +30,7 @@ class DocumentBertSentenceChunkAttentionLSTM(BertPreTrainedModel):
         self.lstm = LSTM(bert_model_config.hidden_size,bert_model_config.hidden_size, batch_first = True)
         self.mlp = nn.Sequential(
             nn.Dropout(0.3),
-            nn.Linear(bert_model_config.hidden_size, 768),
+            nn.Linear(bert_model_config.hidden_size, 768)
         )
         self.w_omega = nn.Parameter(torch.Tensor(bert_model_config.hidden_size, bert_model_config.hidden_size))
         self.b_omega = nn.Parameter(torch.Tensor(1, bert_model_config.hidden_size))
@@ -92,7 +92,7 @@ class DocumentBertCombineWordDocumentLinear(BertPreTrainedModel):
         self.dropout = nn.Dropout(0.5)
         self.mlp = nn.Sequential(
             nn.Dropout(0.3),
-            nn.Linear(bert_model_config.hidden_size * 2, 768),
+            nn.Linear(bert_model_config.hidden_size * 2, 768)
         )
         self.mlp.apply(init_weights)
 
