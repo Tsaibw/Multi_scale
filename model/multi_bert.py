@@ -12,7 +12,7 @@ from utils.evaluate import evaluation
 def init_weights(m):
     if isinstance(m, nn.Linear):
         torch.nn.init.xavier_uniform_(m.weight)
-        m.bias.data.fill_(7)
+        m.bias.data.fill_(0)
 
 
 class DocumentBertSentenceChunkAttentionLSTM(BertPreTrainedModel):
@@ -26,13 +26,18 @@ class DocumentBertSentenceChunkAttentionLSTM(BertPreTrainedModel):
         # for param in self.bert.parameters():#212121
         #     param.requires_grad = False
         
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(0.5)
         self.lstm = LSTM(bert_model_config.hidden_size,bert_model_config.hidden_size, batch_first = True)
         self.mlp = nn.Sequential(
-            nn.Dropout(0.1),
+            nn.Dropout(0.3),
             nn.Linear(bert_model_config.hidden_size, 1),
             nn.Sigmoid()#
         )
+        # self.drop = nn.Dropout(0.3)
+        # self.mlp = nn.Sequential(
+        #     nn.Linear(bert_model_config.hidden_size + 87, 1),
+        #     nn.Sigmoid()#
+        # )
         self.w_omega = nn.Parameter(torch.Tensor(bert_model_config.hidden_size, bert_model_config.hidden_size))
         self.b_omega = nn.Parameter(torch.Tensor(1, bert_model_config.hidden_size))
         self.u_omega = nn.Parameter(torch.Tensor(bert_model_config.hidden_size, 1))
@@ -43,7 +48,7 @@ class DocumentBertSentenceChunkAttentionLSTM(BertPreTrainedModel):
         self.mlp.apply(init_weights)
 
 
-    def forward(self, document_batch: torch.Tensor, device="cuda", bert_batch_size=0, length=0):
+    def forward(self, document_batch: torch.Tensor, readability, hand_craft, device="cuda", bert_batch_size=0, length=0):
         bert_output = torch.zeros(size=(document_batch.shape[0],
                       # min(document_batch.shape[1],
                       # bert_batch_size),
@@ -51,8 +56,8 @@ class DocumentBertSentenceChunkAttentionLSTM(BertPreTrainedModel):
                       self.bert.config.hidden_size), dtype=torch.float, device=device)
         for doc_id in range(document_batch.shape[0]):
             bert_output_temp = self.bert(document_batch[doc_id][:length[doc_id], 0],
-                            token_type_ids=document_batch[doc_id][:length[doc_id], 1],
-                            attention_mask=document_batch[doc_id][:length[doc_id], 2])[1]
+            token_type_ids = document_batch[doc_id][:length[doc_id], 1],
+            attention_mask = document_batch[doc_id][:length[doc_id], 2])[1]
 
             bert_output_temp = torch.nan_to_num(bert_output_temp, nan=0.0)
             bert_output[doc_id][:length[doc_id]] = self.dropout(bert_output_temp)
@@ -70,6 +75,11 @@ class DocumentBertSentenceChunkAttentionLSTM(BertPreTrainedModel):
         attention_hidden = output * attention_score  # (batch_size, seq_len, num_hiddens)
         attention_hidden = torch.sum(attention_hidden, dim=1)  # 加權求和 (batch_size, num_hiddens)
         # print("attention_hidden", attention_hidden.shape, attention_hidden) #(batcg_sizem, 768)
+
+        #mlp
+        # attention_hidden = self.drop(attention_hidden)
+        # non_prompt_specific = torch.cat((readability, hand_craft, attention_hidden), dim=1)
+        # prediction = self.mlp(non_prompt_specific)
         prediction = self.mlp(attention_hidden)
         assert prediction.shape[0] == document_batch.shape[0]
         # print("predictionpredictionpredictionprediction:", prediction)
@@ -88,15 +98,20 @@ class DocumentBertCombineWordDocumentLinear(BertPreTrainedModel):
         #     param.requires_grad = False
     
         self.bert_batch_size = 1
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(0.5)
         self.mlp = nn.Sequential(
-            nn.Dropout(0.1),
+            nn.Dropout(0.3),
             nn.Linear(bert_model_config.hidden_size * 2, 1),
             nn.Sigmoid()#
         )
+        # self.drop = nn.Dropout(0.3)
+        # self.mlp = nn.Sequential(
+        #     nn.Linear(bert_model_config.hidden_size *2 + 87, 1),
+        #     nn.Sigmoid()#
+        # )
         self.mlp.apply(init_weights)
 
-    def forward(self, document_batch: torch.Tensor, device="cuda"):
+    def forward(self, document_batch: torch.Tensor, readability, hand_craft, device="cuda"):
         bert_output = torch.zeros(size=(document_batch.shape[0], # batch_size
                       min(document_batch.shape[1], self.bert_batch_size), #分段的長度
                       self.bert.config.hidden_size * 2),
@@ -109,7 +124,11 @@ class DocumentBertCombineWordDocumentLinear(BertPreTrainedModel):
             bert_token_max = torch.max(all_bert_output_info[0], 1)
             bert_output[doc_id][:self.bert_batch_size] = torch.cat((bert_token_max.values, all_bert_output_info[1]), 1)
 
+        #mlp
         prediction = self.mlp(bert_output.view(bert_output.shape[0], -1))
+        # bert_output = self.drop(bert_output.view(bert_output.shape[0], -1))
+        # non_prompt_feacture = torch.cat((bert_output, readability, hand_craft), dim=1)
+        # prediction = self.mlp(non_prompt_feacture)
         assert prediction.shape[0] == document_batch.shape[0]
         return prediction
 
@@ -123,14 +142,14 @@ class multiBert(nn.Module):
         self.chunk_sizes = chunk_sizes
         self.mse_loss = nn.MSELoss()
         
-    def forward( self, document_single: torch.Tensor, chunked_documents: torch.Tensor, device="cuda", lengths=0):
-        prediction_single = self.linear(document_single, device = device) #(batch_size, 1)
+    def forward( self, document_single: torch.Tensor, chunked_documents: torch.Tensor, readability, hand_craft, device="cuda", lengths=0):
+        prediction_single = self.linear(document_single, device=device, readability=readability, hand_craft=hand_craft) #(batch_size, 1)
         prediction_chunked = torch.zeros_like(prediction_single)
 
         for chunk_index in range(len(self.chunk_sizes)):
             batch_document_tensor_chunk = chunked_documents[chunk_index].to(device)
             length = lengths[chunk_index]
-            predictions_chunk = self.chunk(batch_document_tensor_chunk, device = device, length = length)
+            predictions_chunk = self.chunk(batch_document_tensor_chunk, device=device, length=length, readability=readability, hand_craft=hand_craft)
             prediction_chunked += predictions_chunk
 
         batch_predictions_word_chunk_sentence_doc = torch.add(prediction_single, prediction_chunked)
@@ -157,10 +176,10 @@ class multiBert(nn.Module):
         eval_inverse_pred = []
 
         with torch.no_grad():
-            for document_single, chunked_documents, label, ids ,lengths in eval_loader:
+            for document_single, chunked_documents, label, ids , lengths, readability, hand_craft in eval_loader:
                 document_single = document_single.to(device)
 
-                eval_predictions = self.forward(document_single, chunked_documents, device, lengths)
+                eval_predictions = self.forward(document_single, chunked_documents, readability.to(device), hand_craft.to(device) , device, lengths)
 
                 loss, inverse_predictions, inverse_labels = self.compute_loss(eval_predictions, label, ids, device)
                 eval_total_loss += loss.item()
