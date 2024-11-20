@@ -1,4 +1,5 @@
 #document_bert_architectures
+#預測分數concate feacture
 import torch
 from torch import nn
 from torch.nn import LSTM
@@ -30,7 +31,8 @@ class DocumentBertSentenceChunkAttentionLSTM(BertPreTrainedModel):
         self.lstm = LSTM(bert_model_config.hidden_size,bert_model_config.hidden_size, batch_first = True)
         self.mlp = nn.Sequential(
             nn.Dropout(0.3),
-            nn.Linear(bert_model_config.hidden_size, 768)
+            nn.Linear(bert_model_config.hidden_size, 1),
+            nn.Sigmoid()
         )
         self.w_omega = nn.Parameter(torch.Tensor(bert_model_config.hidden_size, bert_model_config.hidden_size))
         self.b_omega = nn.Parameter(torch.Tensor(1, bert_model_config.hidden_size))
@@ -92,7 +94,8 @@ class DocumentBertCombineWordDocumentLinear(BertPreTrainedModel):
         self.dropout = nn.Dropout(0.5)
         self.mlp = nn.Sequential(
             nn.Dropout(0.3),
-            nn.Linear(bert_model_config.hidden_size * 2, 768)
+            nn.Linear(bert_model_config.hidden_size * 2, 1),
+            nn.Sigmoid()
         )
         self.mlp.apply(init_weights)
 
@@ -124,7 +127,7 @@ class multiBert(nn.Module):
         self.chunk_sizes = chunk_sizes
         self.mse_loss = nn.MSELoss()
         self.mlp = nn.Sequential(
-            nn.Linear(768*2 + 87, 1),
+            nn.Linear(2 + 87, 1),
             nn.Sigmoid()
         )
         
@@ -188,5 +191,3 @@ class multiBert(nn.Module):
             return eval_total_loss / len(eval_loader), qwk_score, pearson_score
 
     
-
-
