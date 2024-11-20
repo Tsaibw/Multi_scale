@@ -1,4 +1,5 @@
 #document_bert_architectures
+#預測bert feacture concate non prompt feacture + pooling
 import torch
 from torch import nn
 from torch.nn import LSTM
@@ -15,6 +16,25 @@ def init_weights(m):
         m.bias.data.fill_(0)
 
 
+class SoftAttention(nn.Module):
+    def __init__(self, hidden_dim):
+        super(SoftAttention, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.w = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.v = nn.Linear(self.hidden_dim, 1)
+
+    def forward(self, h):
+        w = torch.tanh(self.w(h))
+        weight = self.v(w)
+        weight = weight.squeeze(-1)
+        weight = torch.softmax(weight, 1)
+        weight = weight.unsqueeze(-1)
+
+        out = torch.mul(h, weight.repeat(1, 1, h.size(2)))
+        out = torch.sum(out, 1)
+        return out
+
+
 class DocumentBertSentenceChunkAttentionLSTM(BertPreTrainedModel):
     def __init__(self):
         bert_model_config = BertConfig.from_pretrained('bert-base-uncased')
@@ -23,16 +43,10 @@ class DocumentBertSentenceChunkAttentionLSTM(BertPreTrainedModel):
         for layer in self.bert.encoder.layer[:11]:
             for param in layer.parameters():
                 param.requires_grad = False
-        # for param in self.bert.parameters():#212121
-        #     param.requires_grad = False
         
         self.dropout = nn.Dropout(0.5)
         self.lstm = LSTM(bert_model_config.hidden_size,bert_model_config.hidden_size, batch_first = True)
-        self.mlp = nn.Sequential(
-            nn.Dropout(0.3),
-            nn.Linear(bert_model_config.hidden_size, 1),
-            nn.sigmoid()
-        )
+        
         self.w_omega = nn.Parameter(torch.Tensor(bert_model_config.hidden_size, bert_model_config.hidden_size))
         self.b_omega = nn.Parameter(torch.Tensor(1, bert_model_config.hidden_size))
         self.u_omega = nn.Parameter(torch.Tensor(bert_model_config.hidden_size, 1))
@@ -40,7 +54,6 @@ class DocumentBertSentenceChunkAttentionLSTM(BertPreTrainedModel):
         nn.init.uniform_(self.w_omega, -0.1, 0.1)
         nn.init.uniform_(self.u_omega, -0.1, 0.1)
         nn.init.uniform_(self.b_omega, -0.1, 0.1)
-        self.mlp.apply(init_weights)
 
 
     def forward(self, document_batch: torch.Tensor, readability, hand_craft, device="cuda", bert_batch_size=0, length=0):
@@ -69,13 +82,9 @@ class DocumentBertSentenceChunkAttentionLSTM(BertPreTrainedModel):
         attention_score = F.softmax(attention_u, dim=1)  # (batch_size, seq_len, 1)
         attention_hidden = output * attention_score  # (batch_size, seq_len, num_hiddens)
         attention_hidden = torch.sum(attention_hidden, dim=1)  # 加權求和 (batch_size, num_hiddens)
-        # print("attention_hidden", attention_hidden.shape, attention_hidden) #(batcg_sizem, 768)
+        # print("attention_hidden", attention_hidden.shape, attention_hidden) #(batcH_size, 768)
 
-        #mlp
-        prediction = self.mlp(attention_hidden)
-        assert prediction.shape[0] == document_batch.shape[0]
-        # print("predictionpredictionpredictionprediction:", prediction)
-        return prediction
+        return attention_hidden
 
 
 class DocumentBertCombineWordDocumentLinear(BertPreTrainedModel):
@@ -93,8 +102,7 @@ class DocumentBertCombineWordDocumentLinear(BertPreTrainedModel):
         self.dropout = nn.Dropout(0.5)
         self.mlp = nn.Sequential(
             nn.Dropout(0.3),
-            nn.Linear(bert_model_config.hidden_size * 2, 1),
-            nn.sigmoid()
+            nn.Linear(bert_model_config.hidden_size * 2, 768)
         )
         self.mlp.apply(init_weights)
 
@@ -126,21 +134,24 @@ class multiBert(nn.Module):
         self.chunk_sizes = chunk_sizes
         self.mse_loss = nn.MSELoss()
         self.mlp = nn.Sequential(
-            nn.Linear(2 + 87, 1),
+            # nn.Dropout(0.2),
+            nn.Linear(768*2 + 87, 1),
             nn.Sigmoid()
         )
-        
+        self.hidden_dim = 768
+        self.pooling = SoftAttention(self.hidden_dim)
+    
     def forward( self, document_single: torch.Tensor, chunked_documents: torch.Tensor, readability, hand_craft, device="cuda", lengths=0):
         prediction_single = self.linear(document_single, device=device, readability=readability, hand_craft=hand_craft) #(batch_size, 1)
-        prediction_chunked = torch.zeros_like(prediction_single)
+        prediction_chunked = torch.empty(prediction_single.shape[0], 0, self.hidden_dim, device=device)
 
         for chunk_index in range(len(self.chunk_sizes)):
             batch_document_tensor_chunk = chunked_documents[chunk_index].to(device)
             length = lengths[chunk_index]
             predictions_chunk = self.chunk(batch_document_tensor_chunk, device=device, length=length, readability=readability, hand_craft=hand_craft)
-            prediction_chunked += predictions_chunk
+            prediction_chunked = torch.cat((prediction_chunked, predictions_chunk), dim=1)
             
-        prediction_chunked = prediction_chunked / len(self.chunk_sizes) #看要不要修改，
+        prediction_chunked = self.pooling(prediction_chunked)
         batch_predictions_word_chunk_sentence_doc = torch.cat((prediction_single, prediction_chunked, readability, hand_craft), dim=1)
         all_predict = self.mlp(batch_predictions_word_chunk_sentence_doc)
         return all_predict
@@ -190,5 +201,3 @@ class multiBert(nn.Module):
             return eval_total_loss / len(eval_loader), qwk_score, pearson_score
 
     
-
-
