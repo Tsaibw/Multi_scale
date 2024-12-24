@@ -149,6 +149,7 @@ class multiBert(nn.Module):
             batch_document_tensor_chunk = chunked_documents[chunk_index].to(device)
             length = lengths[chunk_index]
             predictions_chunk = self.chunk(batch_document_tensor_chunk, device=device, length=length, readability=readability, hand_craft=hand_craft)
+            predictions_chunk = predictions_chunk.unsqueeze(1)
             prediction_chunked = torch.cat((prediction_chunked, predictions_chunk), dim=1)
             
         prediction_chunked = self.pooling(prediction_chunked)
