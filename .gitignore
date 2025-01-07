@@ -1,5 +1,7 @@
 ckps/
 
+ckpts/
+
 dataset/
 
 untitle.py
@@ -7,5 +9,15 @@ untitle.py
 untitle1.py
 
 untitle2.py
+
+model/model_overall.py
+
+pre_process/cross_prompt_attributes/
+
+pre_process/train (2).pk
+
+pre_process/train.pk
+
+pre_process/training_set_rel3.tsv
 
 __pycache__/

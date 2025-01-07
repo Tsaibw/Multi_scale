@@ -3,7 +3,7 @@ import torch
 import pickle
 import random
 import numpy as np
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, ConcatDataset
 from transformers import BertModel, BertConfig
 from torch.optim import Adam
 from sklearn.preprocessing import StandardScaler
@@ -24,10 +24,11 @@ class NerConfig:
         self.device = "cuda"
         self.chunk_sizes = [90]
         self.data_file = "/home/tsaibw/Multi_scale/ckps/chunk_90"
+        self.num_trait = 9
+        self.alpha = 0.7
+        self.delta = 0.7
+        self.filter_num = 100
 args = NerConfig()
-
-def save_checkpoint(state, filename="checkpoint.pth.tar"):
-    torch.save(state, filename)
 
 
 # train normalize
@@ -51,34 +52,38 @@ for i in range(1,9):
     
     train_dataset = CustomDataset(f"/home/tsaibw/Multi_scale/dataset/train/encode_prompt_{i}.pkl")
     eval_dataset = CustomDataset(f"/home/tsaibw/Multi_scale/dataset/test/encode_prompt_{i}.pkl")
+    test_dataset = CustomDataset(f"/home/tsaibw/Multi_scale/dataset/test/encode_prompt_{i}.pkl")
+    dev_dataset = ConcatDataset([train_dataset, eval_dataset])
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
-    eval_loader = DataLoader(eval_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
-
+    dev_loader = DataLoader(dev_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
+    
     train_loss_list , eval_loss_list = [] ,[] 
     os.makedirs(f"{args.data_file}/prompt{i}", exist_ok=True)
     
     for epoch in range(args.epoch):
         multi_bert_model.train()
         total_loss = 0
-
+        evaluator = Evaluator(dev_dataset, test_dataset, 11)
+        
         for document_single, chunked_documents, label, id_, lengths in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{args.epoch}"):
             document_single = document_single.to(args.device)
             optimizer.zero_grad()
             
-            predictions = multi_bert_model(
-                    document_single=document_single,
-                    chunked_documents=chunked_documents,
-                    device=args.device,
-                    lengths=lengths
+            loss, predict_score, scaled_score = multi_bert_model(
+                    prompt_ids = ids
+                    document_single = document_single,
+                    chunked_documents = chunked_documents,
+                    device = args.device,
+                    lengths = lengths,
+                    scaled_scores = label
             )
             
-            loss, inverse_predictions, inverse_labels = multi_bert_model.compute_loss(predictions, label, id_, args.device)
             total_loss += loss.item()
-
             loss.backward()
             optimizer.step()
-        
-        eval_loss, qwk_score, pearson_score = multi_bert_model.evaluate(eval_loader, device = args.device)
+
+        eval_loader = dev_loader + test_loader
+        eval_loss, result = multi_bert_model.evaluate(eval_loader, test_loader, epoch, evaluator, device=args.device)
         
         print(f"Epoch {epoch}, Train Loss: {total_loss / len(train_loader)}")
         print(f"Test Loss: {eval_loss}")
@@ -87,7 +92,7 @@ for i in range(1,9):
 
         qwk_path = f"{args.data_file}/prompt{i}/result.txt"
         with open(qwk_path, "a") as f:
-            f.write(f"Epoch {epoch + 1}/{args.epoch}, QWK: {qwk_score}, Pearson: {pearson_score}, train_loss: {train_loss_list[-1]}, eval_loss: {eval_loss_list[-1]}\n")
+            f.write(f"Epoch {epoch + 1}/{args.epoch}, result:{result}, train_loss: {train_loss_list[-1]}, eval_loss: {eval_loss_list[-1]}\n")
   
         checkpoint_path = f"{args.data_file}/prompt{i}/epoch_{epoch+1}_checkpoint.pth.tar"
         save_checkpoint({
