@@ -269,7 +269,7 @@ class multiBert(nn.Module):
             pred_scores.masked_fill(pair_mask, 0.), 
             scaled_score.masked_fill(pair_mask, 0.)
         )
-        loss = 0.5 * mse_loss  + 0.3 * ts_loss + 0.2 * pr_loss
+        loss = 0.5 * mse_loss  + 0.2 * ts_loss + 0.3 * pr_loss
         
         return BertModelOutput(
             loss = loss,
