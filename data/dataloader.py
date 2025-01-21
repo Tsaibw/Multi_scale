@@ -20,7 +20,7 @@ class CustomDataset(Dataset):
         readability = torch.tensor([float(x) for x in self.data['readability'][idx]])
         readability = readability[:-1]
         hand_craft = torch.tensor([float(x) for x in self.data['hand_craft'][idx]])
-
+        encode_prompt = self.data['encode_prompt'][idx]
         return {
             "prompt_id": prompt_id,
             "document_single": document_single,
