@@ -28,6 +28,7 @@ class CustomDataset(Dataset):
             "lengths": length,
             "hand_craft": hand_craft,
             "readability": readability,
-            "scaled_score": label
+            "scaled_score": label,
+            "encode_prompt" : encode_prompt
        
         }
