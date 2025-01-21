@@ -38,7 +38,7 @@ class SoftAttention(nn.Module):
 
 
 class DocumentBertSentenceChunkAttentionLSTM(BertPreTrainedModel):
-    def __init__(self, dim):
+    def __init__(self, args):
         bert_model_config = BertConfig.from_pretrained('bert-base-uncased')
         super(DocumentBertSentenceChunkAttentionLSTM, self).__init__(bert_model_config)
         self.bert = BertModel(bert_model_config)
@@ -57,9 +57,9 @@ class DocumentBertSentenceChunkAttentionLSTM(BertPreTrainedModel):
         nn.init.uniform_(self.w_omega, -0.1, 0.1)
         nn.init.uniform_(self.u_omega, -0.1, 0.1)
         nn.init.uniform_(self.b_omega, -0.1, 0.1)
-        self.linear = nn.Linear(bert_model_config.hidden_size, dim)
+        self.linear = nn.Linear(bert_model_config.hidden_size, args.hidden_dim)
 
-    def forward(self, document_batch: torch.Tensor, readability, hand_craft, device="cuda", bert_batch_size=0, length=0):
+    def forward(self, document_batch: torch.Tensor, readability, hand_craft, device, bert_batch_size=0, length=0):
         bert_output = torch.zeros(size=(document_batch.shape[0],
                       document_batch.shape[1],
                       self.bert.config.hidden_size), dtype=torch.float, device=device)
@@ -71,8 +71,8 @@ class DocumentBertSentenceChunkAttentionLSTM(BertPreTrainedModel):
 
             bert_output_temp = torch.nan_to_num(bert_output_temp, nan=0.0)
             bert_output[doc_id][:length[doc_id]] = self.dropout(bert_output_temp)
-        
-        
+
+
         packed_input = pack_padded_sequence(bert_output, length, batch_first=True, enforce_sorted=False)
         packed_output, (_, _) = self.lstm(packed_input)
         output, _ = pad_packed_sequence(packed_output, batch_first=True)
@@ -89,38 +89,23 @@ class DocumentBertSentenceChunkAttentionLSTM(BertPreTrainedModel):
 
 
 class DocumentBertCombineWordDocumentLinear(BertPreTrainedModel):
-    def __init__(self, dim):
+    def __init__(self, args):
         bert_model_config = BertConfig.from_pretrained('bert-base-uncased')
         super(DocumentBertCombineWordDocumentLinear, self).__init__(bert_model_config)
         self.bert = BertModel(bert_model_config)
         for layer in self.bert.encoder.layer[:11]:
             for param in layer.parameters():
                 param.requires_grad = False
-        # for param in self.bert.parameters():
-        #     param.requires_grad = False
     
         self.bert_batch_size = 1
-        self.dropout = nn.Dropout(0.5)
         self.mlp = nn.Sequential(
-            nn.Linear(bert_model_config.hidden_size * 2, dim)
+            nn.Dropout(0.2),
+            nn.Linear(bert_model_config.hidden_size * 2, args.hidden_dim)
         )
         self.mlp.apply(init_weights)
 
-    def forward(self, document_batch: torch.Tensor, readability, hand_craft, device="cuda"):
+    def forward(self, document_batch: torch.Tensor, readability, hand_craft, device):
 
-        # bert_output = torch.zeros(size=(document_batch.shape[0], 
-        #               min(document_batch.shape[1], self.bert_batch_size), #分段的長度
-        #               self.bert.config.hidden_size * 2),
-        #               dtype=torch.float, device="cuda")
-        # for doc_id in range(document_batch.shape[0]):
-        #     # 只取分段一
-        #     all_bert_output_info = self.bert(document_batch[doc_id][:self.bert_batch_size, 0],
-        #                       token_type_ids=document_batch[doc_id][:self.bert_batch_size, 1],
-        #                       attention_mask=document_batch[doc_id][:self.bert_batch_size, 2])
-        #     bert_token_max = torch.max(all_bert_output_info[0], 1)
-        #     bert_output[doc_id][:self.bert_batch_size] = torch.cat((bert_token_max.values, all_bert_output_info[1]), 1)
-        # prediction = self.mlp(bert_output.view(bert_output.shape[0], -1))
-        
         all_bert_output_info = self.bert(
                         document_batch[:, 0, 0],
                         token_type_ids = document_batch[:, 0, 1],
@@ -138,33 +123,38 @@ class MultiTrait(nn.Module):
     def __init__(self, args):
         super(MultiTrait, self).__init__()
         dim = args.hidden_dim + 86 # 86 -> hand_craft + readability
-        
+        self.dropout = nn.Dropout(0.1)
         self.cross_atten = nn.MultiheadAttention(args.hidden_dim, args.mhd_head, batch_first=True)
+        self.ln_attn_norm = nn.LayerNorm(args.hidden_dim)
         self.mlp = nn.Sequential(
-            nn.Linear(dim, dim),  
-            nn.ReLU(),
-            nn.Dropout(p=0.3),  
-            nn.Linear(dim, dim//2)  
+            nn.Linear(dim, args.hidden_dim),  
+            nn.Tanh(),
+            nn.Dropout(p=0.1),  
+            nn.LayerNorm(args.hidden_dim)
         )
-
         
     def forward(self, doc_fea, chunk_fea, readability, hand_craft):
         cross_out, _ = self.cross_atten(doc_fea.unsqueeze(1), chunk_fea, chunk_fea)
+        cross_out  = self.dropout(cross_out)
+        cross_out = self.ln_attn_norm(cross_out)
         cross_fea = cross_out.squeeze(1)
         trait_fea = self.mlp(torch.cat([cross_fea, readability, hand_craft], dim=-1))
-
         return trait_fea
 
 
 class Scorer(nn.Module):
     def __init__(self, args):
         super(Scorer, self).__init__()
-        dim = (args.hidden_dim + 86) // 2 # 86 -> hand_craft + readability
+        dim = (args.hidden_dim)  # 86 -> hand_craft + readability
         self.trait_att = nn.MultiheadAttention(dim, 1, batch_first=True)
+        self.dropout = nn.Dropout(0.1)
         self.score_layer = nn.Linear(dim, 1, bias=True)
         self.sigmoid = nn.Sigmoid()
+        
     def forward(self, x, mask):
-        atten_out, _ = self.trait_att(x, x, x)
+        query = x.detach()
+        atten_out, _ = self.trait_att(query, x, x)
+        atten_out = self.dropout(atten_out)
         atten_out = atten_out * mask.unsqueeze(-1)
         out = self.score_layer(atten_out).squeeze(-1)
         out = self.sigmoid(out)
@@ -211,12 +201,31 @@ class TraitSimilarity(nn.Module):
         return r
 
 
+class PairwiseRankLoss(nn.Module):
+
+    def __init__(self):
+        super(PairwiseRankLoss, self).__init__()
+
+    def forward(self, logits, scores):
+        batch_size = logits.size(0)
+        total_mask = torch.ones((batch_size, batch_size))
+        idx_pairs = torch.nonzero(total_mask).to(logits.device)
+        
+        logits_a, logits_b = logits[idx_pairs[:, 0]], logits[idx_pairs[:, 1]]
+        scores_a, scores_b = scores[idx_pairs[:, 0]], scores[idx_pairs[:, 1]]
+  
+        term = (logits_a-logits_b)[scores_a>scores_b]
+        total_loss = torch.clip(-term, min=0) + torch.log(1 + torch.exp(-torch.abs(term)))
+        loss = total_loss.mean()
+        return loss
+
+
 class multiBert(nn.Module):
 
     def __init__(self, args):
         super(multiBert, self).__init__()
-        self.chunk = DocumentBertSentenceChunkAttentionLSTM(args.hidden_dim)
-        self.linear = DocumentBertCombineWordDocumentLinear(args.hidden_dim)
+        self.chunk = DocumentBertSentenceChunkAttentionLSTM(args)
+        self.linear = DocumentBertCombineWordDocumentLinear(args)
         self.multi_trait = nn.ModuleList([
             MultiTrait(args)
             for _ in range(args.num_trait)
@@ -225,11 +234,13 @@ class multiBert(nn.Module):
         self.hidden_dim = args.hidden_dim
         self.chunk_sizes = args.chunk_sizes
         self.mse_loss = nn.MSELoss()
+        self.pairwise_rank_loss = PairwiseRankLoss()
         self.pooling = SoftAttention(args.hidden_dim)
         self.ts_loss = TraitSimilarity(args.delta)
         self.args = args
     
-    def forward(self, prompt_id, document_single, chunked_documents, readability, hand_craft, scaled_score, device="cuda", lengths=0):
+    def forward(self, prompt_id, document_single, chunked_documents, readability, hand_craft, scaled_score, encode_prompt, lengths=0):
+        device = self.args.device
         prediction_single = self.linear(document_single, device=device, readability=readability, hand_craft=hand_craft) #(batch_size, 1)
         prediction_chunked = torch.empty(prediction_single.shape[0], 0, self.hidden_dim, device=device)
         
@@ -251,14 +262,14 @@ class multiBert(nn.Module):
         pred_scores = self.scorer(trait_feas, mask)
         mask = self._get_mask(scaled_score)
         pair_mask = ~mask
-        
+        pr_loss = self.pairwise_rank_loss(pred_scores.masked_fill(pair_mask, 0.), scaled_score.masked_fill(pair_mask, 0.))
         mse_loss = self.mse_loss(pred_scores[mask], scaled_score[mask])
         ts_loss = self.ts_loss(
-            pred_scores.masked_fill(pair_mask, -0.), 
-            scaled_score.masked_fill(pair_mask, -0.)
+            pred_scores.masked_fill(pair_mask, 0.), 
+            scaled_score.masked_fill(pair_mask, 0.)
         )
         beta = 0.2
-        loss = 0.7 * mse_loss  + 0.3 * ts_loss
+        loss = 0.5 * mse_loss  + 0.3 * ts_loss + 0.2 * pr_loss
         
         return BertModelOutput(
             loss = loss,
