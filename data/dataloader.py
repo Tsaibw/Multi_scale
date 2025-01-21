@@ -18,8 +18,8 @@ class CustomDataset(Dataset):
         prompt_id = self.data['prompt_id'][idx]
         length = [lengths[idx] for lengths in self.data['valid_length']]
         readability = torch.tensor([float(x) for x in self.data['readability'][idx]])
-        readability = readability[:-1]
         hand_craft = torch.tensor([float(x) for x in self.data['hand_craft'][idx]])
+        hand_craft = hand_craft[:-1]
         encode_prompt = self.data['encode_prompt'][idx]
         return {
             "prompt_id": prompt_id,
