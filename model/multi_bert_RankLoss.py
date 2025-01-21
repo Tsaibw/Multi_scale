@@ -240,7 +240,7 @@ class multiBert(nn.Module):
         self.ts_loss = TraitSimilarity(args.delta)
         self.args = args
     
-    def forward(self, prompt_id, document_single, chunked_documents, readability, hand_craft, scaled_score, lengths=0):
+    def forward(self, prompt_id, document_single, chunked_documents, readability, hand_craft, scaled_score, encode_prompt, lengths=0):
         device = self.args.device
         prediction_single = self.linear(document_single, device=device, readability=readability, hand_craft=hand_craft) #(batch_size, 1)
         prediction_chunked = torch.empty(prediction_single.shape[0], 0, self.hidden_dim, device=device)
